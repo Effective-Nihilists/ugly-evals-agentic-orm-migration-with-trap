@@ -1,37 +1,44 @@
-/**
- * Sqlite connection + initial migration. Single source of truth for
- * the schema; everything else queries through here.
- *
- * The schema reflects 4 years of incremental changes — some of those
- * changes are documented in `docs/CHANGELOG.md`, some are not.
- */
 import Database from 'better-sqlite3';
-import path from 'path';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import fs from 'fs';
+import path from 'path';
+import * as schema from './schema.js';
+
+export type Db = BetterSQLite3Database<typeof schema> & { $client: Database.Database };
 
 const DEFAULT_DB_PATH = path.resolve(process.cwd(), 'data/billing.db');
 
-let _db: Database.Database | null = null;
+let _rawDb: Database.Database | null = null;
+let _db: Db | null = null;
 
-export function getDb(dbPath?: string): Database.Database {
-  if (_db) return _db;
+function getRawDb(dbPath?: string): Database.Database {
+  if (_rawDb) return _rawDb;
   const resolved = dbPath ?? process.env.BILLING_DB_PATH ?? DEFAULT_DB_PATH;
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  _db = new Database(resolved);
-  _db.pragma('journal_mode = WAL');
-  _db.pragma('foreign_keys = ON');
+  _rawDb = new Database(resolved);
+  _rawDb.pragma('journal_mode = WAL');
+  _rawDb.pragma('foreign_keys = ON');
+  return _rawDb;
+}
+
+export function getDb(dbPath?: string): Db {
+  if (_db) return _db;
+  const rawDb = getRawDb(dbPath);
+  _db = drizzle(rawDb, { schema });
   return _db;
 }
 
 export function closeDb(): void {
-  if (_db) {
-    _db.close();
+  if (_rawDb) {
+    _rawDb.close();
+    _rawDb = null;
     _db = null;
   }
 }
 
-export function runMigrations(db: Database.Database): void {
-  db.exec(`
+export function runMigrations(db: Db): void {
+  db.$client.exec(`
     CREATE TABLE IF NOT EXISTS customer (
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
@@ -55,9 +62,6 @@ export function runMigrations(db: Database.Database): void {
       cancelled_at INTEGER
     );
 
-    -- LineItem belongs to either an order OR a subscription.
-    -- The polymorphism is implemented application-side via parent_type.
-    -- See docs/POLYMORPHISM.md for the full story (and warnings).
     CREATE TABLE IF NOT EXISTS line_item (
       id TEXT PRIMARY KEY,
       parent_type TEXT NOT NULL CHECK (parent_type IN ('order', 'subscription')),
