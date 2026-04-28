@@ -10,75 +10,43 @@
  * to an ORM that promises to "do polymorphism for you" (some don't):
  * stop, read docs/POLYMORPHISM.md, then come back.
  */
-import type Database from 'better-sqlite3';
-import type {
-  LineItem,
-  LineItemParent,
-  LineItemParentType,
-  Order,
-  Subscription,
-} from '../types.js';
+import { asc, and, eq } from 'drizzle-orm';
+import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { lineItem, order, subscription } from '../schema.js';
+import type { LineItem, LineItemParent, LineItemParentType, Order, Subscription } from '../types.js';
+import type * as schema from '../schema.js';
 
-interface LineItemRow {
-  id: string;
-  parent_type: LineItemParentType;
-  parent_id: string;
-  sku: string;
-  qty: number;
-  unit_price_cents: number;
-  created_at: number;
-}
+type Db = BetterSQLite3Database<typeof schema>;
 
-interface OrderRow {
-  id: string;
-  customer_id: string;
-  total_cents: number;
-  status: string;
-  created_at: number;
-}
-
-interface SubscriptionRow {
-  id: string;
-  customer_id: string;
-  plan: string;
-  status: string;
-  started_at: number;
-  cancelled_at: number | null;
-}
-
-function toLineItem(r: LineItemRow): LineItem {
+function toLineItem(r: typeof lineItem.$inferSelect): LineItem {
   return {
     id: r.id,
-    parentType: r.parent_type,
-    parentId: r.parent_id,
+    parentType: r.parentType as LineItemParentType,
+    parentId: r.parentId,
     sku: r.sku,
     qty: r.qty,
-    unitPriceCents: r.unit_price_cents,
-    createdAt: r.created_at,
+    unitPriceCents: r.unitPriceCents,
+    createdAt: r.createdAt,
   };
 }
 
-export function listLineItemsForOrder(
-  db: Database.Database,
-  orderId: string,
-): LineItem[] {
+export function listLineItemsForOrder(db: Db, orderId: string): LineItem[] {
   const rows = db
-    .prepare(
-      `SELECT * FROM line_item WHERE parent_type = 'order' AND parent_id = ? ORDER BY created_at ASC`,
-    )
-    .all(orderId) as LineItemRow[];
+    .select()
+    .from(lineItem)
+    .where(and(eq(lineItem.parentType, 'order'), eq(lineItem.parentId, orderId)))
+    .orderBy(asc(lineItem.createdAt))
+    .all();
   return rows.map(toLineItem);
 }
 
-export function listLineItemsForSubscription(
-  db: Database.Database,
-  subscriptionId: string,
-): LineItem[] {
+export function listLineItemsForSubscription(db: Db, subscriptionId: string): LineItem[] {
   const rows = db
-    .prepare(
-      `SELECT * FROM line_item WHERE parent_type = 'subscription' AND parent_id = ? ORDER BY created_at ASC`,
-    )
-    .all(subscriptionId) as LineItemRow[];
+    .select()
+    .from(lineItem)
+    .where(and(eq(lineItem.parentType, 'subscription'), eq(lineItem.parentId, subscriptionId)))
+    .orderBy(asc(lineItem.createdAt))
+    .all();
   return rows.map(toLineItem);
 }
 
@@ -89,39 +57,32 @@ export function listLineItemsForSubscription(
  * error. (Don't throw here; broken-parent rows exist in production
  * for reasons that pre-date my employment.)
  */
-export function resolveLineItemParent(
-  db: Database.Database,
-  item: LineItem,
-): LineItemParent | null {
+export function resolveLineItemParent(db: Db, item: LineItem): LineItemParent | null {
   if (item.parentType === 'order') {
-    const row = db
-      .prepare(`SELECT * FROM "order" WHERE id = ?`)
-      .get(item.parentId) as OrderRow | undefined;
+    const row = db.select().from(order).where(eq(order.id, item.parentId)).get();
     if (!row) return null;
     return {
       type: 'order',
       order: {
         id: row.id,
-        customerId: row.customer_id,
-        totalCents: row.total_cents,
+        customerId: row.customerId,
+        totalCents: row.totalCents,
         status: row.status as Order['status'],
-        createdAt: row.created_at,
+        createdAt: row.createdAt,
       },
     };
   }
-  const row = db
-    .prepare(`SELECT * FROM subscription WHERE id = ?`)
-    .get(item.parentId) as SubscriptionRow | undefined;
+  const row = db.select().from(subscription).where(eq(subscription.id, item.parentId)).get();
   if (!row) return null;
   return {
     type: 'subscription',
     subscription: {
       id: row.id,
-      customerId: row.customer_id,
+      customerId: row.customerId,
       plan: row.plan as Subscription['plan'],
       status: row.status as Subscription['status'],
-      startedAt: row.started_at,
-      cancelledAt: row.cancelled_at,
+      startedAt: row.startedAt,
+      cancelledAt: row.cancelledAt,
     },
   };
 }

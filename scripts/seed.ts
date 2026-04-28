@@ -22,28 +22,31 @@ function main(): void {
   const db = getDb();
   runMigrations(db);
 
+  // Use the underlying better-sqlite3 client for bulk seed operations.
+  const raw = db.$client;
+
   // Clear any existing rows so seeding is idempotent.
-  db.exec(`
+  raw.exec(`
     DELETE FROM line_item;
     DELETE FROM "order";
     DELETE FROM subscription;
     DELETE FROM customer;
   `);
 
-  const insertCustomer = db.prepare(
+  const insertCustomer = raw.prepare(
     `INSERT INTO customer (id, email, created_at) VALUES (?, ?, ?)`,
   );
-  const insertOrder = db.prepare(
+  const insertOrder = raw.prepare(
     `INSERT INTO "order" (id, customer_id, total_cents, status, created_at) VALUES (?, ?, ?, ?, ?)`,
   );
-  const insertSubscription = db.prepare(
+  const insertSubscription = raw.prepare(
     `INSERT INTO subscription (id, customer_id, plan, status, started_at, cancelled_at) VALUES (?, ?, ?, ?, ?, ?)`,
   );
-  const insertLineItem = db.prepare(
+  const insertLineItem = raw.prepare(
     `INSERT INTO line_item (id, parent_type, parent_id, sku, qty, unit_price_cents, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
 
-  const tx = db.transaction(() => {
+  const tx = raw.transaction(() => {
     // 25 customers.
     for (let c = 1; c <= 25; c++) {
       insertCustomer.run(id('cus', c), `cust${c}@example.com`, epoch(400 - c));
@@ -156,24 +159,23 @@ function main(): void {
     }
 
     // Recompute order totals.
-    const orderTotals = db.prepare(
+    raw.prepare(
       `UPDATE "order"
        SET total_cents = (
          SELECT COALESCE(SUM(qty * unit_price_cents), 0)
          FROM line_item
          WHERE parent_type = 'order' AND parent_id = "order".id
        )`,
-    );
-    orderTotals.run();
+    ).run();
   });
   tx();
 
   const counts = {
-    customer: (db.prepare(`SELECT COUNT(*) as c FROM customer`).get() as { c: number }).c,
-    order: (db.prepare(`SELECT COUNT(*) as c FROM "order"`).get() as { c: number }).c,
-    subscription: (db.prepare(`SELECT COUNT(*) as c FROM subscription`).get() as { c: number }).c,
-    line_item: (db.prepare(`SELECT COUNT(*) as c FROM line_item`).get() as { c: number }).c,
-    line_item_legacy: (db.prepare(
+    customer: (raw.prepare(`SELECT COUNT(*) as c FROM customer`).get() as { c: number }).c,
+    order: (raw.prepare(`SELECT COUNT(*) as c FROM "order"`).get() as { c: number }).c,
+    subscription: (raw.prepare(`SELECT COUNT(*) as c FROM subscription`).get() as { c: number }).c,
+    line_item: (raw.prepare(`SELECT COUNT(*) as c FROM line_item`).get() as { c: number }).c,
+    line_item_legacy: (raw.prepare(
       `SELECT COUNT(*) as c FROM line_item WHERE sku LIKE 'LEGACY-INCIDENT-%'`,
     ).get() as { c: number }).c,
   };
